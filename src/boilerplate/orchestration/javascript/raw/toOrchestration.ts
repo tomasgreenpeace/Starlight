@@ -451,6 +451,7 @@ export const OrchestrationCodeBoilerPlate: any = (node: any) => {
   const params:any[] = [];
   const states: string[] = [];
   const rtnparams: string[] = [];
+  const functionSig: string[] = [];
   let returnInputs: string[] = [];
   let stateName: string;
   let stateNode: any;
@@ -460,12 +461,24 @@ export const OrchestrationCodeBoilerPlate: any = (node: any) => {
       return { statements:  Orchestrationbp.generateProof.import() }
 
     case 'FunctionDefinition':
-      // the main function
-      if (node.name !== 'cnstrctr') lines.push(
-        `\n\n// Initialisation of variables:
-        \nconst instance = await getContractInstance('${node.contractName}');
-        \nconst contractAddr = await getContractAddress('${node.contractName}');        `,
+      // the main function class
+      if (node.name !== 'cnstrctr') {functionSig.push(
+        `export class ${(node.name).charAt(0).toUpperCase() + node.name.slice(1)}Manager {
+          constructor(web3) {
+            this.web3 = web3;
+          }
+          
+          async init() {
+            this.instance = await getContractInstance('${node.contractName}');
+            this.contractAddr = await getContractAddress('${node.contractName}');
+          }
+        `
       );
+      lines.push(`
+      const instance = this.instance;
+      const contractAddr = this.contractAddr;
+      const web3 =  this.web3;`)
+    }
       if (node.msgSenderParam)
         lines.push(`
               \nconst msgSender = generalise(config.web3.options.defaultAccount);`);
@@ -505,7 +518,7 @@ export const OrchestrationCodeBoilerPlate: any = (node: any) => {
       if (node.name === 'cnstrctr')
         return {
           signature: [
-            `\nexport default async function ${node.name}(${params} ${states}) {`,
+            `\n export default async function ${node.name}(${params} ${states}) {`,
             `\nprocess.exit(0);
           \n}`,
           ],
@@ -514,8 +527,10 @@ export const OrchestrationCodeBoilerPlate: any = (node: any) => {
         if(rtnparams.length == 0) {
           return {
             signature: [
-              `\nexport default async function ${node.name}(${params} ${states}) {`,
+              `${functionSig}
+              \n async  ${node.name}(${params} ${states}) {`,
               `\n return  { tx, encEvent, encBackupEvent };
+              \n}
             \n}`,
             ],
             statements: lines,
@@ -525,8 +540,10 @@ export const OrchestrationCodeBoilerPlate: any = (node: any) => {
       if(rtnparams.includes('bool: bool')) {
         return {
           signature: [
-            `\nexport default async function ${node.name}(${params} ${states}) {`,
+            `
+            \n async  ${node.name}(${params} ${states}) {`,
             `\n const bool = true; \n return  { tx, encEvent, encBackupEvent, ${rtnparams} };
+            \n}
           \n}`,
           ],
           statements: lines,
@@ -535,8 +552,10 @@ export const OrchestrationCodeBoilerPlate: any = (node: any) => {
 
       return {
         signature: [
-          `\nexport default async function ${node.name}(${params} ${states}) {`,
+          ` ${functionSig}
+          \n async ${node.name}(${params} ${states}) {`,
           `\nreturn  { tx, encEvent, encBackupEvent, ${rtnparams} };
+          \n}
         \n}`,
         ],
         statements: lines,
@@ -949,8 +968,34 @@ export const OrchestrationCodeBoilerPlate: any = (node: any) => {
           //   });\n`,
         ],
       };
-    default:
-      return {};
+  
+
+      case 'SendPublicTransaction':  
+      node.publicInputsString = node.publicInputs.map(input =>
+        (typeof input === 'object' && !Array.isArray(input)) ? JSON.stringify(input) : input
+      ).join(',');
+      return {
+        statements: [
+          `\n\n// Send transaction to the blockchain:
+           \nconst txData = await instance.methods.${node.functionName}(${node.publicInputsString}).encodeABI();
+          \nlet txParams = {
+            from: config.web3.options.defaultAccount,
+            to: contractAddr,
+            gas: config.web3.options.defaultGas,
+            gasPrice: config.web3.options.defaultGasPrice,
+            data: txData,
+            chainId: await web3.eth.net.getId(),
+          };
+          \nconst key = config.web3.key;
+          \nconst signed = await web3.eth.accounts.signTransaction(txParams, key);
+          \nconst tx = await web3.eth.sendSignedTransaction(signed.rawTransaction);
+          \nconst encEvent = {};
+          \nconst encBackupEvent ={};
+         `
+        ]
+      }
+      default:
+        return {};
   }
 };
 

@@ -62,6 +62,7 @@ export default function codeGenerator(node: any, options: any = {}): any {
         const fn = OrchestrationCodeBoilerPlate(node);
         const statements = codeGenerator(node.body);
         fn.statements.push(statements);
+
         return `${fn.signature[0]}\n\t${fn.statements.join('')}\n${
           fn.signature[1]
       }`;
@@ -279,6 +280,7 @@ export default function codeGenerator(node: any, options: any = {}): any {
     case 'GenerateProof':
     case 'EncryptBackupPreimage':
     case 'SendTransaction':
+    case 'SendPublicTransaction':
     case 'Imports':
     case 'KeyRegistrationFunction':
       return `${OrchestrationCodeBoilerPlate(node).statements.join('')}`;
