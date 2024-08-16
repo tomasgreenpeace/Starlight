@@ -29,13 +29,13 @@ const findCustomInputsVisitor = (thisPath: NodePath, thisState: any) => {
           item.expression.components.forEach(element => {
             if(element.kind === 'bool'){
               thisState.customInputs ??= [];
-              thisState.customInputs.push({name: '1', typeName: {name: 'bool'}});
+              thisState.customInputs.push({name: '1', typeName: {name: 'bool'}, isReturn: true});
             }
           });
         } else {
           if(item.expression.kind === 'bool'){
             thisState.customInputs ??= [];
-            thisState.customInputs.push({name: '1', typeName: {name: 'bool'}});
+            thisState.customInputs.push({name: '1', typeName: {name: 'bool'}, isReturn: true});
           }
         }
       }
@@ -44,9 +44,8 @@ const findCustomInputsVisitor = (thisPath: NodePath, thisState: any) => {
   if(thisPath.getAncestorOfType('Return') && binding instanceof VariableBinding && binding.isSecret){
    thisState.customInputs ??= [];
    if(thisState.variableName.includes(indicator.node.name))
-    thisState.customInputs.push({name: 'newCommitments['+(thisState.variableName.indexOf(indicator.node.name))+']', typeName: {name: 'uint256'}});
+    thisState.customInputs.push({name: 'newCommitments['+(thisState.variableName.indexOf(indicator.node.name))+']', typeName: {name: 'uint256'}, isReturn: true, isCommitment: true});
   }
-
   // for some reason, node.interactsWithSecret has disappeared here but not in toCircuit
   // below: we have a public state variable we need as a public input to the circuit
   // local variable decs and parameters are dealt with elsewhere
@@ -61,7 +60,7 @@ const findCustomInputsVisitor = (thisPath: NodePath, thisState: any) => {
     thisState.customInputs ??= [];
     const type = binding.node.typeName.nodeType === 'Mapping' ? binding.node.typeName.valueType.name : binding.node.typeName.name;
     if (!thisState.customInputs.some((input: any) => input.name === indicator?.name))
-      thisState.customInputs.push({name: indicator?.name, typeName: {name: type}, isConstantArray: thisPath.isConstantArray() ? thisPath.node.typeName.length.value : false, inCircuit: true });
+      thisState.customInputs.push({name: indicator?.name, typeName: {name: type}, isConstantArray: thisPath.isConstantArray() ? thisPath.node.typeName.length.value : false, inCircuit: true, isReturn: false });
   }
 };
 
@@ -293,14 +292,30 @@ export default {
 
       node._newASTPointer = newNode;
       parent._newASTPointer.push(newNode);
-
-      if (!path.containsSecret) return;
+      if (!path.containsSecret && !path.scope.indicators.internalFunctionInteractsWithSecret) return;
       const file = state.circuitAST.files.find((n: any) => n.fileId === node.id);
       const circuitParams = file.nodes.find((n: any) => n.nodeType === node.nodeType).parameters.parameters;
 
       state.circuitParams ??= {};
       state.circuitParams[path.getUniqueFunctionName()] ??= {};
       state.circuitParams[path.getUniqueFunctionName()].parameters = circuitParams;
+      // Delete repeated circuit parameters
+      let deletedIndexes = [];
+      state.circuitParams[path.getUniqueFunctionName()].parameters.forEach((circParam1, index1) => {
+        state.circuitParams[path.getUniqueFunctionName()].parameters.forEach((circParam2, index2) => {
+          if (circParam1.bpType === 'nullification' && circParam2.bpType === 'nullification' && circParam1.name === circParam2.name && index1 > index2) {
+            deletedIndexes.push(index1);
+          }
+          if (circParam1.bpType === 'newCommitment' && circParam2.bpType === 'newCommitment' && circParam1.name === circParam2.name && index1 > index2) {
+            deletedIndexes.push(index1);
+          }
+        });
+      });
+      deletedIndexes = [...new Set(deletedIndexes)];
+      deletedIndexes.sort((a, b) => b - a);
+      deletedIndexes.forEach(index => {
+        state.circuitParams[path.getUniqueFunctionName()].parameters.splice(index, 1);
+      });
     },
 
     exit(path: NodePath, state: any) {
@@ -315,7 +330,7 @@ export default {
      
 
       // if contract is entirely public, we don't want zkp related boilerplate
-      if (!path.scope.containsSecret && !(node.kind === 'constructor')) return;
+      if (!path.scope.containsSecret && !path.scope.indicators.internalFunctionInteractsWithSecret && !(node.kind === 'constructor')) return;
 
       parameters.push(
         ...buildNode('FunctionBoilerplate', {
@@ -323,7 +338,6 @@ export default {
           scope,
         }),
       );
-
       if (node.kind === 'constructor')
         preStatements.push(
           ...buildNode('FunctionBoilerplate', {
@@ -332,8 +346,7 @@ export default {
             customInputs: state.customInputs,
           }),
         );
-
-      if (path.scope.containsSecret)
+      if (path.scope.containsSecret || path.scope.indicators.internalFunctionInteractsWithSecret)
         postStatements.push(
           ...buildNode('FunctionBoilerplate', {
             bpSection: 'postStatements',
@@ -375,9 +388,9 @@ export default {
       });
 
     node.parameters.forEach((node, index) => {
-    if(node.nodeType === 'VariableDeclaration'){
-    node.name = returnName[index];
-  }
+      if(node.nodeType === 'VariableDeclaration'){
+        node.name = returnName[index];
+      }
     });
 
     const newNode = buildNode('ParameterList');
@@ -431,7 +444,7 @@ export default {
        path.traversePathsFast(findCustomInputsVisitor, state);
        state.returnpara ??= {};
        state.returnpara[state.functionName] ??= {};
-       state.returnpara[state.functionName].returnParameters = state.customInputs.map(n => n.name);
+       state.returnpara[state.functionName].returnParameters = state.customInputs?.filter(n => n.isReturn).map(n => n.name );
        const newNode = buildNode(
        node.nodeType,
        { value: node.expression.value });
@@ -679,6 +692,9 @@ DoWhileStatement: {
         visibility: node.visibility,
         storageLocation: node.storageLocation,
       });
+      if (newNode.isSecret === undefined ){
+        newNode.isSecret = scope.getIndicatorByName(node.name)?.isSecret;
+      }
       node._newASTPointer = newNode;
       if (Array.isArray(parent._newASTPointer)) {
         parent._newASTPointer.push(newNode);
@@ -832,6 +848,9 @@ DoWhileStatement: {
         const subState = { interactsWithSecret: false };
         path.traversePathsFast(interactsWithSecretVisitor, subState);
         if (subState.interactsWithSecret) {
+          if (path.isRequireStatement()){
+            NodePath.getPath(node.arguments[0]).traversePathsFast(findCustomInputsVisitor, state);
+          }
           state.skipSubNodes = true;
           return;
         }
@@ -896,24 +915,16 @@ DoWhileStatement: {
            state.fnParameters.push(args[index]);
 
          });
-         const params = [...(internalfnDefIndicators.nullifiersRequired? [`nullifierRoot`] : []),
-               ...(internalfnDefIndicators.nullifiersRequired? [`latestNullifierRoot`] : []),
-               ...(internalfnDefIndicators.nullifiersRequired?  [`newNullifiers`] : []), 
-               ...(internalfnDefIndicators.oldCommitmentAccessRequired ? [`commitmentRoot`] : []),
-               ...(internalfnDefIndicators.newCommitmentsRequired ? [`newCommitments`] : []),
-               ...(internalfnDefIndicators.containsAccessedOnlyState ? [`checkNullifiers`] : []),
-               ...(internalfnDefIndicators.encryptionRequired ? [`cipherText`] : []),
-               ...(internalfnDefIndicators.encryptionRequired ? [`ephPubKeys`] : []),
-               `proof`,
+         const params = [
+               `inputs, proof, BackupData`,
          ]
-
          state.fnParameters = state.fnParameters.concat(params);
-
          newNode = buildNode('InternalFunctionCall', {
          name: node.expression.name,
          internalFunctionInteractsWithSecret: state.internalFunctionInteractsWithSecret,
          parameters: state.fnParameters,
         });
+        newNode.encryptionRequired = internalfnDefIndicators.encryptionRequired;
         node._newASTPointer = newNode;
         parentnewASTPointer(parent, path, newNode , parent._newASTPointer[path.containerName]);
         return;

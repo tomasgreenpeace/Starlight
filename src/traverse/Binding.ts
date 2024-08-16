@@ -135,8 +135,8 @@ export class Binding {
 
 export class VariableBinding extends Binding {
   isSecret: boolean;
+  isSharedSecret: boolean;
   stateVariable: boolean;
-
   isModified: boolean;
   modificationCount: number = 0;
   modifyingPaths: NodePath[] = []; // array of paths of `Identifier` nodes which modify this variable
@@ -192,6 +192,7 @@ export class VariableBinding extends Binding {
     this.stateVariable = node.stateVariable;
 
     this.isSecret = node.isSecret ?? false;
+    this.isSharedSecret = node.isSharedSecret ?? false;
 
 
     if (path.isMappingDeclaration() || path.isArrayDeclaration()) {

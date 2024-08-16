@@ -23,7 +23,8 @@ const getAccessedValue = (name: string) => {
  */
 const getPublicValue = (node: any) => {
   if (node.nodeType !== 'IndexAccess')
-    return `\nlet ${node.name} = generalise(await instance.methods.${codeGenerator(node)}().call());`;
+    // In the _init variable we save the initial value of the variable for use later. 
+    return `\nlet ${node.name} = generalise(await instance.methods.${codeGenerator(node)}().call());\n let ${node.name}_init = ${node.name};`;
   return `\nconst ${node.name} = generalise(await instance.methods.${codeGenerator(node.baseExpression, { lhs: true} )}(${codeGenerator(node.indexExpression, { contractCall: true })}).call());`;
 };
 
@@ -53,10 +54,10 @@ export default function codeGenerator(node: any, options: any = {}): any {
         node.returnParameters.forEach( (param, index) => {
           if(decStates) {
            if(decStates?.includes(param)){
-            node.returnParameters[index] = node.returnParameters[index]+'_2_newCommitment';
+            node.returnParameters[index] = node.returnParameters[index]+'_change';
           }
         } else if(returnIsSecret[index])
-            node.returnParameters[index] = node.returnParameters[index]+'_newCommitment';
+            node.returnParameters[index] = node.returnParameters[index];
         })
         const fn = OrchestrationCodeBoilerPlate(node);
         const statements = codeGenerator(node.body);
@@ -77,19 +78,21 @@ export default function codeGenerator(node: any, options: any = {}): any {
         return `\n// non-secret line would go here but has been filtered out`;
       if (node.initialValue?.nodeType === 'Assignment') {
         if (node.declarations[0].isAccessed && node.declarations[0].isSecret) {
+          let varName = node.initialValue.leftHandSide?.name ? node.initialValue.leftHandSide.name : node.declarations[0].name;
           return `${getAccessedValue(
-            node.declarations[0].name,
+            varName,
           )}\n${codeGenerator(node.initialValue)};`;
         }
         if (node.declarations[0].isStruct) return `\n let ${codeGenerator(node.declarations[0])} = {}; \n${codeGenerator(node.initialValue)};`;
         return `\nlet ${codeGenerator(node.initialValue)};`;
-      } else if (node.declarations[0].isAccessed && !node.declarations[0].isSecret) {
+      } else if (node.declarations[0].isAccessed && !node.declarations[0].isSecret) { 
         return `${getPublicValue(node.declarations[0])}`
       } else if (node.declarations[0].isAccessed) {
         return `${getAccessedValue(node.declarations[0].name)}`;
       }
 
-      if (
+      if (!node.initialValue && !node.declarations[0].isAccessed) return `\nlet ${codeGenerator(node.declarations[0])};`;
+      if (node.initialValue &&
         node.initialValue.operator &&
         !node.initialValue.operator.includes('=')
       )
@@ -100,7 +103,7 @@ export default function codeGenerator(node: any, options: any = {}): any {
         if (!node.initialValue.nodeType) return `\nlet ${codeGenerator(node.declarations[0])};`
         // local var dec
         if (node.initialValue.nodeType === 'Literal' && !node.isInitializationExpression) return `\nlet ${codeGenerator(node.declarations[0])} = generalise(${codeGenerator(node.initialValue)});`;
-        return `\nlet ${codeGenerator(node.declarations[0])} = ${codeGenerator(node.initialValue)};`;
+        return `\nlet ${codeGenerator(node.declarations[0])} = generalise(${codeGenerator(node.initialValue)});`;
       } 
       return `\nlet ${codeGenerator(node.initialValue)};`;
     }
@@ -116,8 +119,9 @@ export default function codeGenerator(node: any, options: any = {}): any {
       }
 
     case 'ExpressionStatement':
-      if (!node.incrementsSecretState && node.interactsWithSecret)
+      if (!node.incrementsSecretState && (node.interactsWithSecret || node.expression?.internalFunctionInteractsWithSecret)){
         return `\n${codeGenerator(node.expression)};`;
+      }
       if (!node.interactsWithSecret)
         return `\n// non-secret line would go here but has been filtered out`;
       return `\n// increment would go here but has been filtered out`;
@@ -126,16 +130,31 @@ export default function codeGenerator(node: any, options: any = {}): any {
      return " ";
 
     case 'Assignment':
-      if (['+=', '-=', '*='].includes(node.operator)) {
-        return `${codeGenerator(node.leftHandSide, {
-          lhs: true,
-        })} = ${codeGenerator(node.leftHandSide)} ${node.operator.charAt(
-          0,
-        )} ${codeGenerator(node.rightHandSide)}`;
+      // To ensure the left hand side is always a general number, we generalise it here (excluding the initialisation in a for loop). 
+      if (!node.isInitializationAssignment && node.rightHandSide.subType !== 'generalNumber'){
+        if (['+=', '-=', '*='].includes(node.operator)) {
+          return `${codeGenerator(node.leftHandSide, {
+            lhs: true,
+          })} = generalise(${codeGenerator(node.leftHandSide)} ${node.operator.charAt(
+            0,
+          )} ${codeGenerator(node.rightHandSide)})`;
+        }
+        return `${codeGenerator(node.leftHandSide, { lhs: true })} ${
+          node.operator
+        } generalise(${codeGenerator(node.rightHandSide)})`;
+      } else {
+        if (['+=', '-=', '*='].includes(node.operator)) {
+          return `${codeGenerator(node.leftHandSide, {
+            lhs: true,
+          })} = ${codeGenerator(node.leftHandSide)} ${node.operator.charAt(
+            0,
+          )} ${codeGenerator(node.rightHandSide)}`;
+        }
+        return `${codeGenerator(node.leftHandSide, { lhs: true })} ${
+          node.operator
+        } ${codeGenerator(node.rightHandSide)}`;
       }
-      return `${codeGenerator(node.leftHandSide, { lhs: true })} ${
-        node.operator
-      } ${codeGenerator(node.rightHandSide)}`;
+      
 
     case 'BinaryOperation':
       return `${codeGenerator(node.leftExpression, { lhs: options.condition })} ${
@@ -192,7 +211,10 @@ export default function codeGenerator(node: any, options: any = {}): any {
 
     case 'UnaryOperation':
       // ++ or -- on a parseInt() does not work
-      return `generalise(${node.subExpression.name}.integer${node.operator})`;
+      if (node.subExpression.subType === 'bool' && node.operator === '!'){
+        return `${node.operator}(parseInt(${node.subExpression.name}.integer, 10) === 1)`;
+      }
+      return `parseInt(${node.subExpression.name}.integer,10)${node.operator[0]}1`;
 
     case 'Literal':
       return node.value;
@@ -204,7 +226,8 @@ export default function codeGenerator(node: any, options: any = {}): any {
         case 'uint256':
           return `parseInt(${node.name}.integer, 10)`;
         case 'bool':
-          return `parseInt(${node.name}.integer, 10) === 0 ? false : true`;
+          //return `parseInt(${node.name}.integer, 10) === 0 ? false : true`;
+          return `!(parseInt(${node.name}.integer, 10) === 0)`;
         case 'address':
           if (options?.contractCall) return `${node.name}.hex(20)`
           return `${node.name}.integer`;
@@ -215,7 +238,19 @@ export default function codeGenerator(node: any, options: any = {}): any {
     case 'MemberAccess':
       if (options?.lhs) return `${node.name}.${node.memberName}`;
       return codeGenerator({ nodeType: 'Identifier', name: `${node.name}.${node.memberName}`, subType: node.subType });
-  
+
+    case 'RequireStatement':
+      if (!node.message[0]){
+        return `if(!(${codeGenerator(node.condition[0])})){
+          throw new Error(
+          "Require statement not satisfied."
+        );}\n`;
+      }
+      return `if(!(${codeGenerator(node.condition[0])})){
+        throw new Error(
+        "Require statement not satisfied: ${node.message[0].value}"
+      );}\n`;
+
     case 'Folder':
     case 'File':
     case 'EditableCommitmentCommonFilesBoilerplate':
@@ -229,6 +264,11 @@ export default function codeGenerator(node: any, options: any = {}): any {
     case 'IntegrationApiRoutesBoilerplate':
       // Separate files are handled by the fileGenerator
       return fileGenerator(node);
+    case 'BackupDataRetrieverBoilerplate':
+      // Separate files are handled by the fileGenerator
+      return fileGenerator(node);
+    case 'IntegrationEncryptedListenerBoilerplate':  
+    return fileGenerator(node);
     case 'InitialisePreimage':
     case 'InitialiseKeys':
     case 'ReadPreimage':
@@ -237,6 +277,7 @@ export default function codeGenerator(node: any, options: any = {}): any {
     case 'CalculateNullifier':
     case 'CalculateCommitment':
     case 'GenerateProof':
+    case 'EncryptBackupPreimage':
     case 'SendTransaction':
     case 'Imports':
     case 'KeyRegistrationFunction':
