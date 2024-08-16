@@ -1,6 +1,6 @@
 /* eslint-disable no-param-reassign, no-shadow */
 
-// import logger from '../../utils/logger.mjs';
+ import logger from '../../utils/logger.js';
 import cloneDeep from 'lodash.clonedeep';
 import { buildNode } from '../../types/solidity-types.js';
 import { traverseNodesFast } from '../../traverse/traverse.js';
@@ -61,7 +61,7 @@ const findCustomInputsVisitor = (thisPath: NodePath, thisState: any) => {
     thisState.customInputs ??= [];
     const type = binding.node.typeName.nodeType === 'Mapping' ? binding.node.typeName.valueType.name : binding.node.typeName.name;
     if (!thisState.customInputs.some((input: any) => input.name === indicator?.name))
-      thisState.customInputs.push({name: indicator?.name, typeName: {name: type} });
+      thisState.customInputs.push({name: indicator?.name, typeName: {name: type}, isConstantArray: thisPath.isConstantArray() ? thisPath.node.typeName.length.value : false, inCircuit: true });
   }
 };
 
@@ -231,6 +231,7 @@ export default {
             if(node.nodeType === 'FunctionDefinition' && node.kind === 'function'){
               state.internalFncName?.forEach( (name, index) => {
                 if(node.name === name) {
+                  node.msgSigRequired = true;
                  state.postStatements ??= [];
                  state.postStatements = cloneDeep(node.body.postStatements);
                 }
@@ -243,6 +244,8 @@ export default {
                        childNode.oldCommitmentAccessRequired = node.oldCommitmentAccessRequired;
                      if(!childNode.newCommitmentsRequired && node.newCommitmentsRequired)
                        childNode.newCommitmentsRequired = node.newCommitmentsRequired;
+                      if(!childNode.encryptionRequired && node.encryptionRequired)
+                      childNode.encryptionRequired = node.encryptionRequired; 
                     })
                   })
                   node.parameters.parameters.forEach( childNode => {
@@ -254,6 +257,8 @@ export default {
                        childNode.oldCommitmentAccessRequired = node.oldCommitmentAccessRequired;
                       if(!childNode.newCommitmentsRequired && node.newCommitmentsRequired)
                       childNode.newCommitmentsRequired = node.newCommitmentsRequired;
+                      if(!childNode.encryptionRequired && node.encryptionRequired)
+                      childNode.encryptionRequired = node.encryptionRequired; 
                     })
                   })
                 }
@@ -267,6 +272,7 @@ export default {
     enter(path: NodePath, state: any) {
       const { node, parent } = path;
       const isConstructor = node.kind === 'constructor';
+      state.msgSigRequired = false;
       if(node.kind === 'fallback' || node.kind === 'receive')
       {
         node.fileName = node.kind;
@@ -274,6 +280,7 @@ export default {
       }
       else
       state.functionName = path.getUniqueFunctionName();
+
       const newNode = buildNode('FunctionDefinition', {
         name: node.fileName || state.functionName,
         id: node.id,
@@ -281,6 +288,7 @@ export default {
         stateMutability: node.stateMutability === 'payable'? node.stateMutability : '',
         visibility: node.kind ==='function' ? 'public' : node.kind === 'constructor'? '': 'external',
         isConstructor,
+        msgSigRequired: state.msgSigRequired,
       });
 
       node._newASTPointer = newNode;
@@ -298,12 +306,13 @@ export default {
     exit(path: NodePath, state: any) {
       // We populate the entire shield contract upon exit, having populated the FunctionDefinition's scope by this point.
       const { node, scope } = path;
-
+  
       const newFunctionDefinitionNode = node._newASTPointer;
-
+ 
       // Let's populate the `parameters` and `body`:
       const { parameters } = newFunctionDefinitionNode.parameters;
       const { postStatements, preStatements } = newFunctionDefinitionNode.body;
+     
 
       // if contract is entirely public, we don't want zkp related boilerplate
       if (!path.scope.containsSecret && !(node.kind === 'constructor')) return;
@@ -330,9 +339,9 @@ export default {
             bpSection: 'postStatements',
             scope,
             customInputs: state.customInputs,
+           
           }),
         );
-
       delete state?.customInputs;
     },
   },
@@ -612,7 +621,12 @@ DoWhileStatement: {
   VariableDeclaration: {
     enter(path: NodePath, state : any) {
       const { node, parent, scope } = path;
-
+      
+      if(node.typeName.name === 'uint')
+      logger.warn(
+        `VariableDeclarations is uint, please specify the size (from 8 to 256 bits, in steps of 8) of declared variable ${node.name}.`,
+      );
+//
       if (path.isFunctionReturnParameterDeclaration())
         throw new Error(
           `TODO: VariableDeclarations of return parameters are tricky to initialise because we might rearrange things so they become _input_ parameters to the circuit. Future enhancement.`,
@@ -882,10 +896,14 @@ DoWhileStatement: {
            state.fnParameters.push(args[index]);
 
          });
-         const params = [...(internalfnDefIndicators.nullifiersRequired? [`newNullifiers`] : []),
+         const params = [...(internalfnDefIndicators.nullifiersRequired? [`nullifierRoot`] : []),
+               ...(internalfnDefIndicators.nullifiersRequired? [`latestNullifierRoot`] : []),
+               ...(internalfnDefIndicators.nullifiersRequired?  [`newNullifiers`] : []), 
                ...(internalfnDefIndicators.oldCommitmentAccessRequired ? [`commitmentRoot`] : []),
                ...(internalfnDefIndicators.newCommitmentsRequired ? [`newCommitments`] : []),
                ...(internalfnDefIndicators.containsAccessedOnlyState ? [`checkNullifiers`] : []),
+               ...(internalfnDefIndicators.encryptionRequired ? [`cipherText`] : []),
+               ...(internalfnDefIndicators.encryptionRequired ? [`ephPubKeys`] : []),
                `proof`,
          ]
 

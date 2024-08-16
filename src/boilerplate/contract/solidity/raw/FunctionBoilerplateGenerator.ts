@@ -24,7 +24,8 @@ class FunctionBoilerplateGenerator {
         `verifier = IVerifier(verifierAddress);
     		  for (uint i = 0; i < vk.length; i++) {
     			  vks[i] = vk[i];
-    		  }`,
+    		  }
+          newNullifierRoot = Initial_NullifierRoot;`,
       ];
     },
 
@@ -42,10 +43,9 @@ class FunctionBoilerplateGenerator {
       if (isConstructor && encryptionRequired) throw new Error(`There shouldn't be any secret states that require sharing encrypted data in the constructor.`)
       const visibility = isConstructor ? 'memory' : 'calldata';
       return [
-        ...(newNullifiers ? [`uint256[] ${visibility} newNullifiers`] : []),
+        ...(newNullifiers ? [`uint256 nullifierRoot, uint256 latestNullifierRoot,uint256[] ${visibility} newNullifiers`] : []), // nullifiers and nullifier root exist together
         ...(commitmentRoot ? [`uint256 commitmentRoot`] : []),
         ...(newCommitments ? [`uint256[] ${visibility} newCommitments`] : []),
-        ...(checkNullifiers ? [`uint256[] ${visibility} checkNullifiers`] : []),
         ...(encryptionRequired ? [`uint256[][] calldata cipherText`] : []),
         ...(encryptionRequired ? [`uint256[2][] calldata ephPubKeys`] : []),
         ...(newCommitments || newNullifiers ? [`uint256[] ${visibility} proof`] : []),
@@ -56,31 +56,48 @@ class FunctionBoilerplateGenerator {
     postStatements({
       functionName,
       customInputs, // array of custom input names
+      isConstructor,
       nullifiersRequired: newNullifiers,
       oldCommitmentAccessRequired: commitmentRoot,
       newCommitmentsRequired: newCommitments,
-      containsAccessedOnlyState: checkNullifiers,
-      encryptionRequired,
-      isConstructor
+      encryptionRequired
     }): string[] {
       // prettier-ignore
 
       let parameter = [
-      ...(customInputs ? customInputs.filter(input => !input.dummy && input.isParam).map(input => input.structName ? `(${input.properties.map(p => p.type)})` : input.type) : []),
-      ...(newNullifiers ? [`uint256[]`] : []),
-      ...(commitmentRoot ? [`uint256`] : []),
-      ...(newCommitments ? [`uint256[]`] : []),
-      ...(checkNullifiers ? [`uint256[]`] : []),
-      ...(encryptionRequired ? [`uint256[][]`] : []),
+      ...(customInputs ? customInputs.filter(input => !input.dummy && input.isParam)
+        .map(input => input.structName ? `(${input.properties.map(p => p.type)})` : input.isConstantArray ? `${input.type}[${input.isConstantArray}]` : input.type) : []), // TODO arrays of structs/ structs of arrays
+      ...(newNullifiers ? [`uint256`] : []),
+      ...(newNullifiers ? [`uint256`] : []),
+      ...(newNullifiers ? [`uint256[]`] : []), 
+      ...(commitmentRoot  ? [`uint256`] : []),
+      ...(newCommitments  ? [`uint256[]`] : []),
+      ...(encryptionRequired  ? [`uint256[][]`] : []),
       ...(encryptionRequired ? [`uint256[2][]`] : []),
       `uint256[]`,
     ].filter(para => para !== undefined); // Added for return parameter 
 
+   
       customInputs?.forEach((input, i) => {
+        if (input.isConstantArray) {
+          const expanded = [];
+          for (let index = 0; index < +input.isConstantArray; index++) {
+            expanded[index] = {
+              name: `${input.name}[${index}]`,
+              type: input.type,
+              isParam: input.isParam,
+              inCircuit: input.inCircuit,
+            }
+          }
+          customInputs[i] = expanded;
+        }
         if (input.structName) customInputs[i] = input.properties;
       });
 
-      let msgSigCheck = ([...(isConstructor ? [] : [`bytes4 sig = bytes4(keccak256("${functionName}(${parameter})")) ;  \n \t \t \t if (sig == msg.sig)`])]);
+    
+      let msgSigCheck = ([...(isConstructor  ? [] : [`bytes4 sig = bytes4(keccak256("${functionName}(${parameter})")) ;  \n \t \t \t if (sig == msg.sig)`])]);
+
+      customInputs = customInputs?.flat(Infinity).filter(p => p.inCircuit);
 
       return [
         `
@@ -96,11 +113,16 @@ class FunctionBoilerplateGenerator {
           }).join('\n')}`]
           : []),
 
-        ...(newNullifiers ? [`
-          inputs.newNullifiers = newNullifiers;`] : []),
+          ...(newNullifiers ? [`
+          inputs.nullifierRoot = nullifierRoot; `] : []),
 
-        ...(checkNullifiers ? [`
-          inputs.checkNullifiers = checkNullifiers;`] : []),
+          ...(newNullifiers ? [`
+          inputs.latestNullifierRoot = latestNullifierRoot; `] : []),
+
+
+        ...(newNullifiers ? [`
+          inputs.newNullifiers = newNullifiers;
+           `] : []),
 
         ...(commitmentRoot ? [`
           inputs.commitmentRoot = commitmentRoot;`] : []),

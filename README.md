@@ -1,3 +1,5 @@
+_This code is not owned by EY and EY provides no warranty and disclaims any and all liability for use of this code. Users must conduct their own diligence with respect to use for their purposes and any and all usage is on an as-is basis and at your own risk._
+
 # starlight :stars:
 
 Generate a zApp from a Solidity contract.
@@ -57,6 +59,7 @@ This code is not owned by EY and EY provides no warranty and disclaims any and a
   - [Testing](#testing)
     - [full zapp](#full-zapp)
     - [circuit](#circuit)
+  - [Zokrates worker](#zokrates-worker)
   - [Contributing](#contributing)
 - [License](#license)
 - [Acknowledgements](#acknowledgements)
@@ -326,6 +329,20 @@ You can also filter these commitments by variable name. Using the example above,
 ```
 as a GET request to `http://localhost:3000/getCommitmentsByVariableName`.
 
+#### Using secret states in the constructor
+
+Starlight handles secret initiation in the constructor by creating a proof at the setup stage. Any user supplied inputs will be prompted for in the command line when running `./bin/setup`.
+
+Since this inevitably creates a commitment to be sent your local db, simply restarting the zapp will **not** work. The blockchain will be aware of the constructor commitment, but your zapp will not.
+
+If you would like to restart the zapp and redeploy the contract, always (with no running docker containers) run:
+
+`./bin/redeploy` <-- creates a new constructor proof and saves the commitment, then deploys the shield contract
+
+`npm run restart` <-- if you'd like to use the APIs, always **restart** rather than **start** since the latter clears your local dbs
+
+Then, if you previously had nullifiers, reinstate them in your local sparse merkle tree by sending a POST to `http://localhost:3000/reinstateNullifiers`.
+
 #### Deploy on public testnets
 
 Apart from local ganache instance, Starlight output zapps can be now be deployed in Sepolia, Goerli and Polygon Mumbai as cli options. Connection to Sepolia and Goerli are made through [infura](https://infura.io/) endpoints and that of Polygon Mumbai is provided via [maticvigil](https://rpc.maticvigil.com/).
@@ -352,6 +369,11 @@ The configuration can be done during `./bin/setup` phase in the following way.
 `docker run -v $PWD:/app/code -ti docker.pkg.github.com/eyblockchain/zokrates-worker/zokrates_worker:1.0.8 /bin/bash`
 
 `./zokrates compile --light -i code/myCircuit.zok` <-- it should compile
+
+### Zokrates Worker
+
+Starlight uses containerised zokrates from [zokrates-worker-starlight](https://github.com/EYBlockchain/starlight/pkgs/container/zokrates-worker-starlight). 
+Here we have use two zokrates container, zokrates -version:0.7.12 to compile the circuits and zokrates -version:0.8.1 to do the setup and generate-proof to improve the key and proof generation time.
 
 ### Contributing
 

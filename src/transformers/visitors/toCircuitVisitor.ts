@@ -793,6 +793,23 @@ let childOfSecret =  path.getAncestorOfType('ForStatement')?.containsSecret;
 
   },
 
+  ArrayTypeName: {
+    enter(path: NodePath, state: any) {
+      const { node, parent } = path;
+      const newNode = buildNode('ElementaryTypeName', {
+        name: `${node.baseType.name === 'bool' ?  'bool' : 'field'}[${node.length.value}]`
+      });
+
+      node._newASTPointer = newNode;
+      if (Array.isArray(parent._newASTPointer)) {
+        parent._newASTPointer.push(newNode);
+      } else {
+        parent._newASTPointer[path.containerName] = newNode;
+      }
+      state.skipSubNodes = true;
+    }
+  },
+
   ElementaryTypeNameExpression: {
     enter(path: NodePath, state: any) {
       const { node, parent } = path;
@@ -1017,6 +1034,7 @@ let childOfSecret =  path.getAncestorOfType('ForStatement')?.containsSecret;
       if (!state.skipPublicInputs) path.traversePathsFast(publicInputsVisitor, {});
 
       const newNode = buildNode('IndexAccess');
+      if (path.isConstantArray(node) && (path.isLocalStackVariable(node) || path.isFunctionParameter(node))) newNode.isConstantArray = true;
       node._newASTPointer = newNode;
       parent._newASTPointer[path.containerName] = newNode;
     },
@@ -1089,6 +1107,7 @@ let childOfSecret =  path.getAncestorOfType('ForStatement')?.containsSecret;
       const callingfnDefIndicators = callingfnDefPath?.scope.indicators;
       const functionReferncedNode = scope.getReferencedPath(node.expression);
       const internalfnDefIndicators = functionReferncedNode?.scope.indicators;
+      state.isEncrypted = internalfnDefIndicators.encryptionRequired;
       const startNodePath = path.getAncestorOfType('ContractDefinition')
       startNodePath?.node.nodes.forEach(node => {
         if(node.nodeType === 'VariableDeclaration' && !node.typeDescriptions.typeIdentifier.includes('_struct')){
@@ -1122,6 +1141,7 @@ let childOfSecret =  path.getAncestorOfType('ForStatement')?.containsSecret;
        name: node.expression.name,
        internalFunctionInteractsWithSecret: internalFunctionInteractsWithSecret,
        CircuitArguments: [],
+       CircuitReturn:[],
        circuitImport: isCircuit,
      });
      const fnNode = buildNode('InternalFunctionBoilerplate', {
@@ -1130,6 +1150,7 @@ let childOfSecret =  path.getAncestorOfType('ForStatement')?.containsSecret;
        circuitImport: isCircuit,
        structImport: !state.isAddStructDefinition,
        structName: state.structName,
+       isEncrypted: state.isEncrypted,
       });
       node._newASTPointer = newNode ;
       parentnewASTPointer(parent, path, newNode, parent._newASTPointer[path.containerName]);

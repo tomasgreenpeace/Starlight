@@ -240,6 +240,7 @@ const visitor = {
 
     exit(path: NodePath, state: any) {
       const { node } = path;
+      node._newASTPointer.wholeNullified = state.wholeNullified;
       for (const file of node._newASTPointer) {
         if (file.nodeType === 'SetupCommonFilesBoilerplate') {
           file.constructorParams = state.constructorParams;
@@ -445,6 +446,11 @@ const visitor = {
               || '';
           }
 
+          if (stateVarIndicator.isWhole && stateVarIndicator.isNullified) {
+            state.wholeNullified ??= [];
+            if (!state.wholeNullified.includes(name)) state.wholeNullified.push(name)
+          }
+          
           let { incrementsArray, incrementsString } = isIncremented
             ? collectIncrements(stateVarIndicator)
             : { incrementsArray: null, incrementsString: null };
@@ -488,6 +494,7 @@ const visitor = {
             newNodes.calculateNullifierNode.privateStates[
               name
             ] = buildPrivateStateNode('CalculateNullifier', {
+              accessedOnly,
               indicator: stateVarIndicator,
             });
           }
@@ -576,9 +583,9 @@ const visitor = {
           if (param.isPrivate || param.isSecret || param.interactsWithSecret) {
             if (param.typeName.isStruct) {
               param.typeName.properties.forEach((prop: any) => {
-                newNodes.generateProofNode.parameters.push(`${param.name}.${prop.name}`);
+                newNodes.generateProofNode.parameters.push(`${param.name}.${prop.name}${param.typeName.isConstantArray ? '.all' : ''}`);
               });
-            } else newNodes.generateProofNode.parameters.push(param.name);
+            } else newNodes.generateProofNode.parameters.push(`${param.name}${param.typeName.isConstantArray ? '.all' : ''}`);
           }
 
         }
@@ -594,11 +601,11 @@ const visitor = {
         // this adds other values we need in the tx
         for (const param of node.parameters.parameters) {
           if (!param.isSecret) {
-            if (path.isStructDeclaration(param)) {
-              const newParam = {
-                name: param.name,
-                properties: param._newASTPointer.typeName.properties.map(p => p.name)
-              };
+            if (path.isStructDeclaration(param) || path.isConstantArray(param)) {
+              let newParam: any = {};
+              newParam.name = param.name;
+              if (path.isStructDeclaration(param)) newParam.properties = param._newASTPointer.typeName.properties.map(p => p.name);
+              if (path.isConstantArray) newParam.isConstantArray = true;
               newNodes.sendTransactionNode.publicInputs.push(newParam);
             } else newNodes.sendTransactionNode.publicInputs.push(param.name);
           }
@@ -1132,7 +1139,7 @@ const visitor = {
       }
 
       if (node._newASTPointer?.interactsWithSecret && path.getAncestorOfType('ForStatement'))  {
-        (path.getAncestorOfType('ForStatement') || {}).node._newASTPointer.interactsWithSecret = true;
+        path.getAncestorOfType('ForStatement').node._newASTPointer.interactsWithSecret = true;
         if(indicator){
           path.getAncestorOfType('Block')?.node._newASTPointer.push(
             buildNode('Assignment', {
@@ -1238,6 +1245,25 @@ const visitor = {
      },
   },
 
+  ArrayTypeName: {
+    enter(path: NodePath, state: any) {
+      const { node, parent } = path;
+      const newNode = buildNode('ElementaryTypeName', {
+        name: `[${node.length.value || node.length.name}]`
+      });
+      const dec = path.getAncestorOfType('VariableDeclaration').node;
+      if (node.length.value && (path.isLocalStackVariable(dec) || path.isFunctionParameter(dec))) newNode.isConstantArray = true;
+
+      node._newASTPointer = newNode;
+      if (Array.isArray(parent._newASTPointer)) {
+        parent._newASTPointer.push(newNode);
+      } else {
+        parent._newASTPointer[path.containerName] = newNode;
+      }
+      state.skipSubNodes = true;
+    }
+  },
+
   ElementaryTypeName: {
     enter(path: NodePath) {
       const { node, parent } = path;
@@ -1303,7 +1329,8 @@ const visitor = {
   IndexAccess: {
     enter(path: NodePath, state: any) {
       const { node, parent } = path;
-      const name = getIndexAccessName(node);
+      let name = getIndexAccessName(node);
+      if (path.isConstantArray(node) && (path.isLocalStackVariable(node) || path.isFunctionParameter(node))) name = `${node.baseExpression.name}[${path.scope.getMappingKeyName(node)}]`;
       const newNode = buildNode('Identifier', {
         name,
         subType: node.typeDescriptions.typeString,
@@ -1355,9 +1382,8 @@ const visitor = {
         state.skipSubNodes = true;
         return;
       }
-      const newNode = buildNode(node.nodeType , {
-        interactsWithSecret: node.containsSecret
-      });
+      const newNode = buildNode(node.nodeType);
+      newNode.interactsWithSecret = true;
       node._newASTPointer = newNode;
       parent._newASTPointer.push(newNode);
     },
@@ -1391,6 +1417,7 @@ const visitor = {
       const newNode = node._newASTPointer;
       if (newNode.body.statements.some(n => n.interactsWithSecret)) {
         newNode.initializationExpression.interactsWithSecret = true;
+        newNode.initializationExpression.isInitializationExpression = true;
         newNode.loopExpression.interactsWithSecret = true;
       }
     }

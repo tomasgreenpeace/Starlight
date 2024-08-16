@@ -77,7 +77,6 @@ class ContractBoilerplateGenerator {
       let {
         indicators: { nullifiersRequired, oldCommitmentAccessRequired, newCommitmentsRequired, containsAccessedOnlyState, encryptionRequired },
       } = scope;
-
       const fnDefBindings = scope.filterBindings(
         (b: any) => b.kind === 'FunctionDefinition' && b.path.containsSecret,
       );
@@ -97,7 +96,10 @@ class ContractBoilerplateGenerator {
       };
     },
 
-    constructor() {},
+    constructor() {
+      const {indicators: { nullifiersRequired }} = this.scope;
+      return { nullifiersRequired };
+    },
 
     registerZKPPublicKey() {},
 
@@ -114,9 +116,10 @@ class ContractBoilerplateGenerator {
       let paramtype: string;
       let params : any[];
       let functionName: string;
+      
       for ([functionName, parameterList] of Object.entries(circuitParams)) {
         for ([paramtype, params] of Object.entries(parameterList)){
-          const returnpara = {};
+        const returnpara = {};
         if(paramtype  === 'returnParameters'){
           returnpara[ paramtype ] = params;
           delete parameterList[ paramtype ];
@@ -126,11 +129,11 @@ class ContractBoilerplateGenerator {
           switch (circuitParamNode.bpType) {
             case 'nullification':
               if (circuitParamNode.isNullified) {
+                if (!newList.includes('nullifierRoot')) 
+                  newList.push('nullifierRoot')
                 newList.push('nullifier');
-              } else {
-                // we use a nullification node for accessed, not nullified, states
-                newList.push('checkNullifier')
-              }
+ 
+              } 
               break;
             case 'newCommitment':
               newList.push(circuitParamNode.bpType);
@@ -151,6 +154,13 @@ class ContractBoilerplateGenerator {
                 if (circuitParamNode.typeName?.members) {
                   newList.push(...circuitParamNode.typeName.members.map(m => `${circuitParamNode.name}.${m.name}`));
                   break;
+                } else if (circuitParamNode.typeName?.name.includes(`[`)) {
+                  // TODO arrays of structs/structs of arrays/more robust soln
+                  const arrayLen = circuitParamNode.typeName?.name.match(/(?<=\[)(\d+)(?=\])/);
+                  for (let index = 0; index < +arrayLen[0]; index++) {
+                    newList.push(`${circuitParamNode.name}[${index}]`);
+                  }
+                  break;
                 } else newList.push(circuitParamNode.name);
               }
             }
@@ -161,11 +171,9 @@ class ContractBoilerplateGenerator {
           }
         });
         parameterList[ paramtype ] = newList;
-        parameterList = {...parameterList, ...returnpara};
+        parameterList = {...parameterList, ...returnpara};    
       }
-
      circuitParams[ functionName ] = parameterList;
-
     }
       const constructorContainsSecret = Object.values(this.scope.bindings).some((binding: any) => binding.node.kind === 'constructor')
       return { nullifiersRequired, oldCommitmentAccessRequired, newCommitmentsRequired, containsAccessedOnlyState, encryptionRequired, constructorContainsSecret, circuitParams, isjoinCommitmentsFunction};
